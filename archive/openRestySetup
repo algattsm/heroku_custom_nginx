@@ -1,0 +1,36 @@
+docker run -it -e "STACK=heroku-18" -e "PCRE_VERSION=8.43" -e "ZLIB_VERSION=1.2.11" -e "OPENRESTY_VERSION=1.15.8.3" heroku/heroku:18 /bin/bash
+apt update ; apt -y install curl build-essential libssl-dev
+Execute scripts/build_nginx
+  -- Remove vars:
+
+
+pcre_tarball_url=https://ftp.pcre.org/pub/pcre/pcre-${PCRE_VERSION}.tar.gz
+zlib_url=http://zlib.net/zlib-${ZLIB_VERSION}.tar.gz
+openresty_tarball_url=https://openresty.org/download/openresty-${OPENRESTY_VERSION}.tar.gz
+
+temp_dir=$(mktemp -d /tmp/nginx.XXXXXXXXXX)
+
+cd $temp_dir
+echo "Temp dir: $temp_dir"
+
+echo "Downloading $openresty_tarball_url"
+curl -L $openresty_tarball_url | tar xvz
+
+echo "Downloading $pcre_tarball_url"
+(cd openresty-${OPENRESTY_VERSION} && curl -L $pcre_tarball_url | tar xvz )
+
+echo "Downloading $zlib_url"
+(cd openresty-${OPENRESTY_VERSION} && curl -L $zlib_url | tar xvz )
+
+(
+  cd openresty-${OPENRESTY_VERSION}
+  ./configure \
+    --with-pcre=pcre-${PCRE_VERSION} \
+    --with-zlib=zlib-${ZLIB_VERSION} \
+    --with-http_gzip_static_module \
+    --with-http_realip_module \
+    --with-http_ssl_module \
+    --prefix=/tmp/nginx
+  make install
+)
+

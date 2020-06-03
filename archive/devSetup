@@ -1,0 +1,74 @@
+docker run -it -e "STACK=heroku-18" -e "NGINX_VERSION=1.16.1" -e "PCRE_VERSION=8.43" -e "HEADERS_MORE_VERSION=0.33" -e "ZLIB_VERSION=1.2.11" -e "UUID4_VERSION=master" -e "NGX_DEVKIT_VERSION=0.3.1" -e "NGX_LUA_MOD_VERSION=0.10.16rc5" -e "LUAJIT_VERSION=2.1-20200102" -e "OPENRESTY_VERSION=1.15.8.3" heroku/heroku:18 /bin/bash
+apt update ; apt -y install curl build-essential libssl-dev
+Execute scripts/build_nginx
+  -- Remove vars:
+
+
+nginx_tarball_url=https://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz
+pcre_tarball_url=https://ftp.pcre.org/pub/pcre/pcre-${PCRE_VERSION}.tar.gz
+headers_more_nginx_module_url=https://github.com/openresty/headers-more-nginx-module/archive/v${HEADERS_MORE_VERSION}.tar.gz
+uuid4_url=https://github.com/cybozu/nginx-uuid4-module/archive/${UUID4_VERSION}.tar.gz
+zlib_url=http://zlib.net/zlib-${ZLIB_VERSION}.tar.gz
+ngx_devkit_tarball_url=https://github.com/vision5/ngx_devel_kit/archive/v${NGX_DEVKIT_VERSION}.tar.gz
+ngx_lua_tarball_url=https://github.com/openresty/lua-nginx-module/archive/v${NGX_LUA_MOD_VERSION}.tar.gz
+luajit_tarball_url=https://github.com/openresty/luajit2/archive/v${LUAJIT_VERSION}.tar.gz
+openresty_tarball_url=https://openresty.org/download/openresty-${OPENRESTY_VERSION}.tar.gz
+
+temp_dir=$(mktemp -d /tmp/nginx.XXXXXXXXXX)
+build_lua=${temp_dir}/luajit
+mkdir -p $build_lua
+
+cd $temp_dir
+echo "Temp dir: $temp_dir"
+
+echo "Downloading $nginx_tarball_url"
+curl -L $nginx_tarball_url | tar xzv
+
+echo "Downloading $pcre_tarball_url"
+(cd nginx-${NGINX_VERSION} && curl -L $pcre_tarball_url | tar xvz )
+
+echo "Downloading $headers_more_nginx_module_url"
+(cd nginx-${NGINX_VERSION} && curl -L $headers_more_nginx_module_url | tar xvz )
+
+echo "Downloading $zlib_url"
+(cd nginx-${NGINX_VERSION} && curl -L $zlib_url | tar xvz )
+
+echo "Downloading $uuid4_url"
+(cd nginx-${NGINX_VERSION} && curl -L $uuid4_url | tar xvz )
+
+echo "Downloading $ngx_devkit_tarball_url"
+(cd nginx-${NGINX_VERSION} && curl -L $ngx_devkit_tarball_url | tar xvz )
+
+echo "Downloading $ngx_lua_tarball_url"
+(cd nginx-${NGINX_VERSION} && curl -L $ngx_lua_tarball_url | tar xvz )
+
+echo "Downloading $luajit_tarball_url"
+(cd nginx-${NGINX_VERSION} && curl -L $luajit_tarball_url | tar xvz )
+
+echo "Compiling LUAJIT"
+( cd nginx-${NGINX_VERSION}/luajit2-${LUAJIT_VERSION} && make && make install PREFIX=${build_lua} )
+
+echo "Downloading $openresty_tarball_url"
+(cd nginx-${NGINX_VERSION} && curl -L $openresty_tarball_url | tar xvz )
+
+echo "Compiling OpenResty"
+( cd nginx-${NGINX_VERSION}/openresty-${OPENRESTY_VERSION} && ./configure --with-pcre=pcre-${PCRE_VERSION} && make && make install )
+
+(
+  cd nginx-${NGINX_VERSION}
+  export LUAJIT_LIB=${build_lua}/lib
+  export LUAJIT_INC=${build_lua}/include/luajit-2.1
+  ./configure \
+    --with-ld-opt="-Wl,-rpath,${LUAJIT_LIB}" \
+    --with-pcre=pcre-${PCRE_VERSION} \
+    --with-zlib=zlib-${ZLIB_VERSION} \
+    --with-http_gzip_static_module \
+    --with-http_realip_module \
+    --with-http_ssl_module \
+    --prefix=/tmp/nginx \
+    --add-module=/tmp/pxCore/modules/nginx \
+    --add-module=${temp_dir}/nginx-${NGINX_VERSION}/headers-more-nginx-module-${HEADERS_MORE_VERSION} \
+    --add-module=${temp_dir}/nginx-${NGINX_VERSION}/nginx-uuid4-module-${UUID4_VERSION}
+  make install
+)
+

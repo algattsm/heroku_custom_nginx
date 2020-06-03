@@ -1,0 +1,14 @@
+#!/bin/bash
+# Build NGINX and modules on Heroku.
+# This program is designed to run in a web dyno provided by Heroku.
+# We would like to build an NGINX binary for the builpack on the
+# exact machine in which the binary will run.
+# Our motivation for running in a web dyno is that we need a way to
+# download the binary once it is built so we can vendor it in the buildpack.
+#
+# Once the dyno has is 'up' you can open your browser and navigate
+# this dyno's directory structure to download the nginx binary.
+
+apt-get update
+apt-get install -y nginx libnginx-mod-http-lua libnginx-mod-http-subs-filter software-properties-common nginx build-essential ca-certificates nginx libnginx-mod-http-lua libnginx-mod-http-subs-filter lua-cjson libnettle6 nettle-dev luarocks luajit libluajit-5.1-dev
+luarocks install perimeterx-nginx-plugin

@@ -1,0 +1,160 @@
+#!/bin/bash
+
+# Heroku standard way to log buildpack info to console
+status() {
+  echo "-----> $*"
+}
+
+set -e            # fail fast
+set -o errexit    # always exit on error
+set -o pipefail   # don't ignore exit codes when piping output
+unset GIT_DIR     # Avoid GIT_DIR leak from previous build step
+
+build_dir=$1
+cache_dir=$2
+env_dir=$3
+
+# Versions
+NGINX_VERSION=1.16.1
+#LUAJIT_VERSION=2.0.5
+LUAJIT_VERSION=2.1-20200102
+NGX_DEVEL_KIT_VERSION=0.3.1
+NGX_MODULE_VERSION=0.10.15
+SET_MISC_MODULE_VERSION=0.32
+MORE_HEADERS_MODULE_VERSION=0.33
+LUAROCKS_VERSION=3.3.1
+
+# Download URLs
+nginx_tarball_url=http://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz
+#jit_tarball_url=http://luajit.org/download/LuaJIT-${LUAJIT_VERSION}.tar.gz
+jit_tarball_url=https://github.com/openresty/luajit2/archive/v${LUAJIT_VERSION}.tar.gz
+ngx_devel_kit_url=https://github.com/simpl/ngx_devel_kit/archive/v${NGX_DEVEL_KIT_VERSION}.tar.gz
+ngx_module_url=https://github.com/openresty/lua-nginx-module/archive/v${NGX_MODULE_VERSION}.tar.gz
+set_misc_module_url=https://github.com/openresty/set-misc-nginx-module/archive/v${SET_MISC_MODULE_VERSION}.tar.gz
+more_headers_module_url=https://github.com/openresty/headers-more-nginx-module/archive/v${MORE_HEADERS_MODULE_VERSION}.tar.gz
+luarocks_tarball=https://luarocks.org/releases/luarocks-${LUAROCKS_VERSION}.tar.gz
+
+# Build paths
+cache=$cache_dir/build/nginx-with-lua/${NGINX_VERSION}-lua-${LUAJIT_VERSION}
+build=${BUILD_PREFIX}/app/nginx
+build_lua=${BUILD_PREFIX}/app/luajit
+build_luarocks=${BUILD_PREFIX}/app/luarocks
+mkdir -p $build
+mkdir -p $build_lua
+mkdir -p $build_luarocks
+
+if [ -e $cache ]; then
+  # Use cached nginx
+  status "Using previously compiled nginx-$NGINX_VERSION"
+  cp -R $cache/nginx/* $build
+  cp -R $cache/luajit/* $build_lua
+else
+  status "Downloading $nginx_tarball_url"
+  curl -L $nginx_tarball_url | tar xz
+
+  status "Downloading $jit_tarball_url"
+  curl -L $jit_tarball_url | tar xz
+
+  status "Downloading $ngx_devel_kit_url"
+  curl -L $ngx_devel_kit_url | tar xz
+
+  status "Downloading $ngx_module_url"
+  curl -L $ngx_module_url | tar xz
+
+  status "Downloading $set-misc-nginx-module"
+  curl -L $set_misc_module_url | tar xz
+
+  status "Downloading $more_headers_module_url"
+  curl -L $more_headers_module_url | tar xz
+
+  status "Downloading $luarocks_tarball"
+  curl -L $luarocks_tarball | tar xz
+
+  status "Building LuaJIT"
+  pushd luajit2-${LUAJIT_VERSION}
+    make PREFIX=$build_lua install
+  popd
+
+  status "Building nginx"
+  pushd nginx-${NGINX_VERSION}
+    export LUAJIT_LIB=${build_lua}/lib
+    export LUAJIT_INC=${build_lua}/include/luajit-2.1
+
+    ./configure \
+      --prefix=$build \
+      --with-http_stub_status_module \
+      --with-http_realip_module \
+      --with-http_ssl_module \
+      --with-ld-opt="-Wl,-rpath,${LUAJIT_LIB}" \
+      --add-module=../ngx_devel_kit-${NGX_DEVEL_KIT_VERSION} \
+      --add-module=../lua-nginx-module-${NGX_MODULE_VERSION} \
+      --add-module=../set-misc-nginx-module-${SET_MISC_MODULE_VERSION} \
+      --add-module=../headers-more-nginx-module-${MORE_HEADERS_MODULE_VERSION}
+
+    #make install --silent
+    make install
+  popd
+
+  status "Building luarocks"
+  pushd luarocks-${LUAROCKS_VERSION}
+    ./configure \
+      --prefix=$build_lua \
+      --with-lua=${build_lua}
+    make install --silent
+
+    export LUA_PATH="${build_lua}/share/lua/5.1/?.lua;./?.lua;${build_lua}/share/luajit-2.1.0-beta3/?.lua;${build_lua}/share/lua/5.1/?/init.lua"
+    export LUA_CPATH="./?.so;${build_lua}/lib/lua/5.1/?.so"
+    export PATH="${build_lua}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    #$build_lua/bin/luarocks install perimeterx-nginx-plugin
+    $build_lua/bin/luarocks install lua-resty-core
+    $build_lua/bin/luarocks install lua-resty-http
+    $build_lua/bin/luarocks install lua-resty-nettle
+    $build_lua/bin/luarocks install luasocket
+    $build_lua/bin/luarocks install lustache
+    $build_lua/bin/luarocks install lua-cjson
+  popd
+
+  # Clear out cache if our version doesn't exist
+  status "Caching build"
+  rm -rf $cache_dir/*
+  mkdir -p $cache
+  cp -R $build $cache
+  cp -R $build_lua $cache
+fi
+
+mv $build $build_dir
+mv $build_lua $build_dir
+
+cp -rf px $build_dir/luajit/lib/lua/px
+
+mkdir -p "$build_dir/bin/"
+cp bin/start-nginx "$build_dir/bin/"
+echo '-----> nginx-px-buildpack: Added start-nginx to app/bin'
+
+mkdir -p "$build_dir/config"
+
+if [[ ! -f $build_dir/config/mime.types ]]; then
+	cp config/mime.types "$build_dir/config/"
+	echo "-----> nginx-px-buildpack: Default mime.types copied to $build_dir/config/"
+else
+	echo "-----> nginx-px-buildpack: Custom mime.types found in $build_dir/config."
+fi
+
+if [[ ! -f $build_dir/config/pxconfig.lua.erb ]]; then
+        cp config/pxconfig.lua.erb "$build_dir/config/"
+        echo "-----> nginx-px-buildpack: Default pX config copied to $build_dir/config."
+else
+        echo "-----> nginx-px-buildpack: Custom pX config found in $build_dir/config."
+fi
+
+if [[ ! -f $build_dir/config/nginx.conf.erb ]]; then
+	cp config/nginx.conf.erb "$build_dir/config/"
+	echo "-----> nginx-px-buildpack: Default nginx config copied to $build_dir/config."
+else
+	echo "-----> nginx-px-buildpack: Custom nginx config found in $build_dir/config."
+fi
+exit 0
+
+# Add to PATH
+mkdir -p $build_dir/.profile.d
+echo 'PATH=$PATH:$HOME/nginx/sbin' > $build_dir/.profile.d/nginx_path.sh

@@ -1,0 +1,123 @@
+#!/bin/bash
+
+# Heroku standard way to log buildpack info to console
+status() {
+  echo "-----> $*"
+}
+
+set -e            # fail fast
+set -o errexit    # always exit on error
+set -o pipefail   # don't ignore exit codes when piping output
+unset GIT_DIR     # Avoid GIT_DIR leak from previous build step
+
+build_dir=$1
+cache_dir=$2
+env_dir=$3
+
+# Versions
+NGINX_VERSION=1.16.1
+LUAJIT_VERSION=2.0.5
+NGX_DEVEL_KIT_VERSION=0.3.1
+NGX_MODULE_VERSION=0.10.15
+SET_MISC_MODULE_VERSION=0.32
+MORE_HEADERS_MODULE_VERSION=0.33
+
+# Download URLs
+nginx_tarball_url=http://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz
+jit_tarball_url=http://luajit.org/download/LuaJIT-${LUAJIT_VERSION}.tar.gz
+ngx_devel_kit_url=https://github.com/simpl/ngx_devel_kit/archive/v${NGX_DEVEL_KIT_VERSION}.tar.gz
+ngx_module_url=https://github.com/openresty/lua-nginx-module/archive/v${NGX_MODULE_VERSION}.tar.gz
+set_misc_module_url=https://github.com/openresty/set-misc-nginx-module/archive/v${SET_MISC_MODULE_VERSION}.tar.gz
+more_headers_module_url=https://github.com/openresty/headers-more-nginx-module/archive/v${MORE_HEADERS_MODULE_VERSION}.tar.gz
+
+# Build paths
+cache=$cache_dir/build/nginx-with-lua/${NGINX_VERSION}-lua-${LUAJIT_VERSION}
+build=${BUILD_PREFIX}/app/nginx
+build_lua=${BUILD_PREFIX}/app/luajit
+mkdir -p $build
+mkdir -p $build_lua
+
+if [ -e $cache ]; then
+  # Use cached nginx
+  status "Using previously compiled nginx-$NGINX_VERSION"
+  cp -R $cache/nginx/* $build
+  cp -R $cache/luajit/* $build_lua
+else
+  status "Downloading $nginx_tarball_url"
+  curl -L $nginx_tarball_url | tar xz
+
+  status "Downloading $jit_tarball_url"
+  curl -L $jit_tarball_url | tar xz
+
+  status "Downloading $ngx_devel_kit_url"
+  curl -L $ngx_devel_kit_url | tar xz
+
+  status "Downloading $ngx_module_url"
+  curl -L $ngx_module_url | tar xz
+
+  status "Downloading $set-misc-nginx-module"
+  curl -L $set_misc_module_url | tar xz
+
+  status "Downloading $more_headers_module_url"
+  curl -L $more_headers_module_url | tar xz
+
+  status "Building LuaJIT"
+  pushd LuaJIT-${LUAJIT_VERSION}
+    make PREFIX=$build_lua install
+  popd
+
+  status "Building nginx"
+  pushd nginx-${NGINX_VERSION}
+    export LUAJIT_LIB=${build_lua}/lib
+    export LUAJIT_INC=${build_lua}/include/luajit-2.0
+
+    ./configure \
+      --prefix=$build \
+      --with-http_stub_status_module \
+      --with-http_realip_module \
+      --with-http_ssl_module \
+      --with-ld-opt="-Wl,-rpath,${LUAJIT_LIB}" \
+      --add-module=../ngx_devel_kit-${NGX_DEVEL_KIT_VERSION} \
+      --add-module=../lua-nginx-module-${NGX_MODULE_VERSION} \
+      --add-module=../set-misc-nginx-module-${SET_MISC_MODULE_VERSION} \
+      --add-module=../headers-more-nginx-module-${MORE_HEADERS_MODULE_VERSION}
+
+    make install --silent
+  popd
+
+  # Clear out cache if our version doesn't exist
+  status "Caching build"
+  rm -rf $cache_dir/*
+  mkdir -p $cache
+  cp -R $build $cache
+  cp -R $build_lua $cache
+fi
+
+mv $build $build_dir
+mv $build_lua $build_dir
+
+# Add to PATH
+mkdir -p $build_dir/.profile.d
+echo 'PATH=$PATH:$HOME/nginx/sbin' > $build_dir/.profile.d/nginx_path.sh
+
+nginx_version=$(nginx -V 2>&1 | head -1 | awk '{ print $NF }')
+echo "-----> nginx-px-buildpack: Installed ${nginx_version} to $HOME/nginx/sbin"
+cp bin/start-nginx "$HOME/nginx/sbin/"
+echo '-----> nginx-px-buildpack: Added start-nginx to $HOME/nginx/sbin'
+cp bin/start-nginx-solo "$HOME/nginx/sbin/"
+echo '-----> nginx-px-buildpack: Added start-nginx-solo to $HOME/nginx/sbin'
+
+if [[ ! -f $HOME/nginx/conf/mime.types ]]; then
+        cp config/mime.types "$HOME/nginx/conf/"
+        echo '-----> nginx-px-buildpack: Default mime.types copied to $HOME/nginx/conf/'
+else
+        echo '-----> nginx-px-buildpack: Custom mime.types found in $HOME/nginx/conf.'
+fi
+
+if [[ ! -f $HOME/nginx/conf/nginx.conf.erb ]]; then
+        cp config/nginx.conf.erb "$HOME/nginx/conf/"
+        echo '-----> nginx-px-buildpack: Default config copied to $HOME/nginx/conf.'
+else
+        echo '-----> nginx-px-buildpack: Custom config found in $HOME/nginx/conf.'
+fi
+exit 0
